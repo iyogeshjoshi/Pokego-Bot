@@ -40,6 +40,7 @@ from geopy.exc import GeocoderQuotaExceeded
 
 from pokemongo_bot import PokemonGoBot, TreeConfigBuilder
 from pokemongo_bot.health_record import BotEvent
+from pokemongo_bot.plugin_loader import PluginLoader
 
 if sys.version_info >= (2, 7, 9):
     ssl._create_default_https_context = ssl._create_unverified_context
@@ -51,6 +52,8 @@ logger = logging.getLogger('cli')
 logger.setLevel(logging.INFO)
 
 def main():
+    bot = False
+
     try:
         logger.info('PokemonGO Bot v1.0')
         sys.stdout = codecs.getwriter('utf8')(sys.stdout)
@@ -73,6 +76,7 @@ def main():
                 tree = TreeConfigBuilder(bot, config.raw_tasks).build()
                 bot.workers = tree
                 bot.metrics.capture_stats()
+                bot.health_record = health_record
 
                 bot.event_manager.emit(
                     'bot_start',
@@ -100,7 +104,7 @@ def main():
                     'api_error',
                     sender=bot,
                     level='info',
-                    formmated='Log logged in, reconnecting in {:s}'.format(wait_time)
+                    formatted='Log logged in, reconnecting in {:s}'.format(wait_time)
                 )
                 time.sleep(wait_time)
             except ServerBusyOrOfflineException:
@@ -126,7 +130,7 @@ def main():
         if bot:
             report_summary(bot)
 
-        raise e
+        raise
 
 def report_summary(bot):
     if bot.metrics.start_time is None:
@@ -380,10 +384,12 @@ def init_config():
     if not config.password and 'password' not in load:
         config.password = getpass("Password: ")
 
+    config.encrypt_location = load.get('encrypt_location','')
     config.catch = load.get('catch', {})
     config.release = load.get('release', {})
     config.action_wait_max = load.get('action_wait_max', 4)
     config.action_wait_min = load.get('action_wait_min', 1)
+    config.plugins = load.get('plugins', [])
     config.raw_tasks = load.get('tasks', [])
 
     config.vips = load.get('vips', {})
@@ -438,6 +444,10 @@ def init_config():
     if config.catch_randomize_spin_factor < 0 or 1 < config.catch_randomize_spin_factor:
         parser.error("--catch_randomize_spin_factor is out of range! (should be 0 <= catch_randomize_spin_factor <= 1)")
         return None
+
+    plugin_loader = PluginLoader()
+    for plugin in config.plugins:
+        plugin_loader.load_plugin(plugin)
 
     # create web dir if not exists
     try:
