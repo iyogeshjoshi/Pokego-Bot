@@ -60,3 +60,12 @@
  * thebigjc
  * JaapMoolenaar
  * eevee-github
+ * g0vanish
+ * cmezh
+ * Nivong
+ * kestel
+ * simonsmh
+ * joaodragao
+ * extink
+ * Quantra
+ * pmquan

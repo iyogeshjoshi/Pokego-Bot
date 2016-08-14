@@ -1,5 +1,6 @@
 from pokemongo_bot import inventory
 from pokemongo_bot.human_behaviour import sleep
+from pokemongo_bot.inventory import Pokemon
 from pokemongo_bot.item_list import Item
 from pokemongo_bot.base_task import BaseTask
 
@@ -106,10 +107,17 @@ class EvolvePokemon(BaseTask):
                 data={
                     'pokemon': pokemon.name,
                     'iv': pokemon.iv,
-                    'cp': pokemon.cp
+                    'cp': pokemon.cp,
+                    'ncp': '?',
+                    'dps': '?',
+                    'xp': '?'
                 }
             )
-            inventory.candies().get(pokemon.pokemon_id).consume(pokemon.evolution_cost)
+            awarded_candies = response_dict.get('responses', {}).get('EVOLVE_POKEMON', {}).get('candy_awarded', 0)
+            inventory.candies().get(pokemon.pokemon_id).consume(pokemon.evolution_cost - awarded_candies)
+            inventory.pokemons().remove(pokemon.id)
+            pokemon = Pokemon(response_dict.get('responses', {}).get('EVOLVE_POKEMON', {}).get('evolved_pokemon_data', {}))
+            inventory.pokemons().add(pokemon)
             sleep(self.evolve_speed)
             return True
         else:
@@ -117,8 +125,3 @@ class EvolvePokemon(BaseTask):
             cache[pokemon.name] = 1
             sleep(0.7)
             return False
-
-    def _compute_iv(self, pokemon):
-        total_iv = pokemon.get("individual_attack", 0) + pokemon.get("individual_stamina", 0) + pokemon.get(
-            "individual_defense", 0)
-        return round((total_iv / 45.0), 2)
