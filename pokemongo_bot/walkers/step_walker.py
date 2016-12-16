@@ -1,93 +1,84 @@
-from math import sqrt
+# -*- coding: utf-8 -*-
+import time
 
-from random import random, uniform
-from pokemongo_bot.cell_workers.utils import distance
-from pokemongo_bot.human_behaviour import random_lat_long_delta, sleep
+from geographiclib.geodesic import Geodesic
+from random import uniform
+
+from pokemongo_bot.human_behaviour import sleep, random_alt_delta
 
 
 class StepWalker(object):
-
-    def __init__(self, bot, dest_lat, dest_lng):
+    def __init__(self, bot, dest_lat, dest_lng, dest_alt=None, precision=0.5):
         self.bot = bot
-        self.api = bot.api
+        self.epsilon = 0.01
+        self.precision = max(precision, self.epsilon)
 
-        self.initLat, self.initLng = self.bot.position[0:2]
+        self.dest_lat = dest_lat
+        self.dest_lng = dest_lng
 
-        self.dist = distance(
-            self.initLat,
-            self.initLng,
-            dest_lat,
-            dest_lng
-        )
-
-        self.alt = uniform(self.bot.config.alt_min, self.bot.config.alt_max)
-        self.speed = uniform(self.bot.config.walk_min, self.bot.config.walk_max)
-
-        self.destLat = dest_lat
-        self.destLng = dest_lng
-        self.totalDist = max(1, self.dist)
-
-        if self.speed == 0:
-            self.steps = 1
+        if dest_alt is None:
+            self.dest_alt = uniform(self.bot.config.alt_min, self.bot.config.alt_max)
         else:
-            self.steps = (self.dist + 0.0) / (self.speed + 0.0)
+            self.dest_alt = dest_alt
 
-        if self.dist < self.speed or int(self.steps) <= 1:
-            self.dLat = 0
-            self.dLng = 0
-            self.magnitude = 0
+        self.saved_location = None
+        self.last_update = time.time()
+
+    def step(self, speed=None):
+        now = time.time()
+
+        sleep(1 - min(now - self.last_update, 1))
+        self.last_update = now
+
+        if speed is None:
+            speed = uniform(self.bot.config.walk_min, self.bot.config.walk_max)
+
+        origin_lat, origin_lng, origin_alt = self.bot.position
+
+        new_position = self.get_next_position(origin_lat, origin_lng, origin_alt, self.dest_lat, self.dest_lng, self.dest_alt, speed)
+
+        self.bot.api.set_position(new_position[0], new_position[1], new_position[2])
+        self.bot.event_manager.emit("position_update",
+                                    sender=self,
+                                    level="debug",
+                                    data={"current_position": (new_position[0], new_position[1], new_position[2]),
+                                          "last_position": (origin_lat, origin_lng, origin_alt),
+                                          "distance": "",
+                                          "distance_unit": ""})
+
+        return self.is_arrived()
+
+    def is_arrived(self):
+        inverse = Geodesic.WGS84.Inverse(self.bot.position[0], self.bot.position[1], self.dest_lat, self.dest_lng)
+        return inverse["s12"] <= self.precision + self.epsilon
+
+    def get_next_position(self, origin_lat, origin_lng, origin_alt, dest_lat, dest_lng, dest_alt, distance):
+        inverse = Geodesic.WGS84.Inverse(origin_lat, origin_lng, dest_lat, dest_lng)
+        total_distance = inverse["s12"]
+
+        if total_distance == 0:
+            total_distance = self.precision or self.epsilon
+
+        if distance == 0:
+            if not self.saved_location:
+                self.saved_location = origin_lat, origin_lng, origin_alt
+
+            dest_lat, dest_lng, dest_alt = self.saved_location
+            travel = self.precision
         else:
-            self.dLat = (dest_lat - self.initLat) / int(self.steps)
-            self.dLng = (dest_lng - self.initLng) / int(self.steps)
-            self.magnitude = self._pythagorean(self.dLat, self.dLng)
+            self.saved_location = None
+            travel = min(total_distance, distance)
 
-    def step(self):
-        if (self.dLat == 0 and self.dLng == 0) or self.dist < self.speed:
-            self.api.set_position(self.destLat + random_lat_long_delta(), self.destLng + random_lat_long_delta(), self.alt)
-            self.bot.event_manager.emit(
-                'position_update',
-                sender=self,
-                level='debug',
-                data={
-                    'current_position': (self.destLat, self.destLng),
-                    'last_position': (self.initLat, self.initLng),
-                    'distance': '',
-                    'distance_unit': ''
-                }
-            )
-            self.bot.heartbeat()
-            return True
+        direct = Geodesic.WGS84.Direct(origin_lat, origin_lng, inverse["azi1"], travel)
+        next_lat = direct["lat2"]
+        next_lng = direct["lon2"]
 
-        totalDLat = (self.destLat - self.initLat)
-        totalDLng = (self.destLng - self.initLng)
-        magnitude = self._pythagorean(totalDLat, totalDLng)
-        unitLat = totalDLat / magnitude
-        unitLng = totalDLng / magnitude
+        random_azi = uniform(inverse["azi1"] - 90, inverse["azi1"] + 90)
+        random_dist = uniform(0.0, self.precision)
+        direct = Geodesic.WGS84.Direct(next_lat, next_lng, random_azi, random_dist)
 
-        scaledDLat = unitLat * self.magnitude
-        scaledDLng = unitLng * self.magnitude
+        next_lat = direct["lat2"]
+        next_lng = direct["lon2"]
+        next_alt = origin_alt + (travel / total_distance) * (dest_alt - origin_alt) + random_alt_delta()
 
-        cLat = self.initLat + scaledDLat + random_lat_long_delta()
-        cLng = self.initLng + scaledDLng + random_lat_long_delta()
-
-        self.api.set_position(cLat, cLng, self.alt)
-        self.bot.event_manager.emit(
-            'position_update',
-            sender=self,
-            level='debug',
-            data={
-                'current_position': (cLat, cLng),
-                'last_position': (self.initLat, self.initLng),
-                'distance': '',
-                'distance_unit': ''
-            }
-        )
-        self.bot.heartbeat()
-
-        sleep(1)  # sleep one second plus a random delta
-        # self._work_at_position(
-        #     self.initLat, self.initLng,
-        #     alt, False)
-
-    def _pythagorean(self, lat, lng):
-        return sqrt((lat ** 2) + (lng ** 2))
+        return next_lat, next_lng, next_alt

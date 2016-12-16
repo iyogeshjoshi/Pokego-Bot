@@ -1,41 +1,39 @@
-# -*- coding: utf-8 -*-
+from __future__ import absolute_import
+from geographiclib.geodesic import Geodesic
 
-from random import uniform
-from pokemongo_bot.human_behaviour import sleep
 from pokemongo_bot.walkers.step_walker import StepWalker
-from polyline_generator import PolylineObjectHandler
-from pokemongo_bot.cell_workers.utils import distance
-from pokemongo_bot.constants import Constants
+from .polyline_generator import PolylineObjectHandler
+from pokemongo_bot.human_behaviour import random_alt_delta
+
 
 class PolylineWalker(StepWalker):
-    '''
-    Heavy multi-botting can cause issue, since the directions API has limits.
-    '''
+    def get_next_position(self, origin_lat, origin_lng, origin_alt, dest_lat, dest_lng, dest_alt, distance):
+        polyline = PolylineObjectHandler.cached_polyline((self.bot.position[0], self.bot.position[1]), (dest_lat, dest_lng), google_map_api_key=self.bot.config.gmapkey)
 
-    def __init__(self, bot, speed, dest_lat, dest_lng, parent):
-        super(PolylineWalker, self).__init__(bot, speed, dest_lat, dest_lng)
-        self.polyline_walker = PolylineObjectHandler.cached_polyline(bot, (self.api._position_lat, self.api._position_lng),
-                                        (self.destLat, self.destLng), self.speed, parent)
-        self.dist = distance(
-            self.bot.position[0],
-            self.bot.position[1],
-            dest_lat,
-            dest_lng
-        )
+        while True:
+            _, (dest_lat, dest_lng) = polyline._step_dict[polyline._step_keys[polyline._last_step]]
 
-    def step(self):
-        cLat, cLng = self.api._position_lat, self.api._position_lng
+            next_lat, next_lng, _ = super(PolylineWalker, self).get_next_position(origin_lat, origin_lng, origin_alt, dest_lat, dest_lng, dest_alt, distance)
 
-        if self.dist < 10: # 10m, add config? set it at constants?
-            PolylineObjectHandler.delete_cache(self.polyline_walker)
-            return True
+            if polyline._last_step == len(polyline._step_keys) - 1:
+                break
+            else:
+                travelled = Geodesic.WGS84.Inverse(origin_lat, origin_lng, next_lat, next_lng)["s12"]
+                remaining = Geodesic.WGS84.Inverse(next_lat, next_lng, dest_lat, dest_lng)["s12"]
+                step_distance = Geodesic.WGS84.Inverse(origin_lat, origin_lng, dest_lat, dest_lng)["s12"]
 
-        self.polyline_walker.unpause()
-        sleep(1)
-        self.polyline_walker.pause()
-        cLat, cLng = self.polyline_walker.get_pos()[0]
-        alt = uniform(self.bot.config.alt_min, self.bot.config.alt_max)
-        self.api.set_position(cLat, cLng, alt)
-        self.bot.heartbeat()
-        return False
+                if remaining < (self.precision + self.epsilon):
+                    polyline._last_step += 1
+                    distance = abs(distance - step_distance)
+                else:
+                    distance = abs(distance - travelled)
 
+                if distance > (self.precision + self.epsilon):
+                    origin_lat, origin_lng, origin_alt = dest_lat, dest_lng, dest_alt
+                else:
+                    break
+
+        polyline._last_pos = (next_lat, next_lng)
+        next_alt = polyline.get_alt() or origin_alt
+
+        return next_lat, next_lng, next_alt + random_alt_delta()
